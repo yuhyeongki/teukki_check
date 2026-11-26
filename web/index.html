@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>활동 자기평가</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1c2330; --sub:#667085; --line:#dde1e8; --accent:#2456c7; --on:#fff; --warn:#b42318; --ok:#067647; --soft:#eef2fb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12151b; --card:#1b1f28; --ink:#e8ebf1; --sub:#9aa3b5; --line:#303745; --accent:#7aa2f7; --on:#0d1117; --warn:#ff8a80; --ok:#5fd39a; --soft:#222a3b; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  main { max-width:880px; margin:0 auto; padding:20px 16px 120px; }
+  header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  h1 { font-size:21px; margin:0; } h2 { font-size:17px; margin:0 0 8px; } h3 { font-size:15px; margin:14px 0 4px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:12px; }
+  .guide { white-space:pre-wrap; background:var(--soft); border-radius:8px; padding:10px 12px; margin:0 0 12px; }
+  .pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .sub { color:var(--sub); font-size:13px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .tabs { display:flex; gap:6px; overflow-x:auto; padding-bottom:8px; margin-bottom:4px; }
+  .tabs button { white-space:nowrap; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:8px; padding:7px 14px; cursor:pointer; }
+  button.primary, button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:var(--on); }
+  button.danger { color:var(--warn); }
+  button:disabled { opacity:.5; cursor:default; }
+  input, textarea, select { font:inherit; color:var(--ink); background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; max-width:100%; }
+  input[type="text"], textarea { width:100%; }
+  textarea { resize:vertical; min-height:90px; }
+  label { display:block; font-weight:600; margin:12px 0 4px; }
+  label.check { display:inline-flex; gap:6px; align-items:center; font-weight:400; margin:0; }
+  .badge { font-size:12px; border:1px solid var(--line); border-radius:99px; padding:1px 9px; color:var(--sub); }
+  .badge.ok { color:var(--ok); border-color:var(--ok); } .badge.warn { color:var(--warn); border-color:var(--warn); }
+  .over { color:var(--warn); font-weight:600; }
+  .bar { position:sticky; bottom:0; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; min-width:640px; } th, td { border-bottom:1px solid var(--line); padding:6px; text-align:left; vertical-align:middle; }
+  td input[type="text"] { min-width:80px; }
+  #toast { position:fixed; left:50%; bottom:84px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:9px 16px; border-radius:8px; max-width:90vw; z-index:20; }
+  #reauth { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:10; }
+  #reauth[hidden], #toast[hidden] { display:none; }
+</style>
+</head>
+<body>
+<main id="app"><p class="sub">불러오는 중…</p></main>
+<div id="reauth" hidden><div class="card"><h2>다시 로그인해 주세요</h2><p class="sub">작성 중인 내용은 그대로 남아 있습니다.</p><div id="reauthBtn"></div></div></div>
+<div id="toast" role="status" hidden></div>
+
+<script src="config.js"></script>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script>
+(function () {
+  'use strict';
+  const $app = document.getElementById('app');
+  const state = { token: null, me: null, publicTexts: null, tabId: null, drafts: {}, dirty: {},
+    admin: null, page: 'review', settings: null, settingsDirty: false, students: null, studentsDirty: {}, review: {}, reviewDrafts: {}, reviewTab: null, filter: 'all' };
+
+  /* ───── 도우미 ───── */
+  function h(tag, attrs) {
+    const el = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+      if (v == null || v === false) return;
+      if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (k === 'class') el.className = v;
+      else if (k === 'value') el.dataset.v = v;
+      else el.setAttribute(k, v === true ? '' : v);
+    });
+    Array.from(arguments).slice(2).flat(Infinity).forEach((c) => {
+      if (c == null || c === false) return;
+      el.append(c.nodeType ? c : document.createTextNode(String(c)));
+    });
+    if (el.dataset.v !== undefined) { el.value = el.dataset.v; delete el.dataset.v; }
+    return el;
+  }
+  const render = (...nodes) => { const y = window.scrollY; $app.replaceChildren(...nodes.flat(Infinity).filter(Boolean)); window.scrollTo(0, y); };
+
+  let toastTimer;
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
+  }
+
+  /** 나이스 방식 바이트: 한글 3, 영문·숫자·공백 1, 줄바꿈 2 */
+  function neisBytes(s) {
+    let n = 0;
+    for (const ch of s.replace(/\r/g, '')) {
+      const c = ch.codePointAt(0);
+      n += ch === '\n' ? 2 : c < 128 ? 1 : c < 2048 ? 2 : c < 65536 ? 3 : 4;
+    }
+    return n;
+  }
+
+  const store = {
+    get() { try { return sessionStorage.getItem('idToken'); } catch (e) { return null; } },
+    set(v) { try { v ? sessionStorage.setItem('idToken', v) : sessionStorage.removeItem('idToken'); } catch (e) { /* 저장 불가 환경 */ } },
+  };
+  function emailOf(token) {
+    try { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).email.toLowerCase(); } catch (e) { return ''; }
+  }
+
+  /* ───── 통신 ───── */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function api(action, payload) {
+    let attempt = 0;
+    for (;;) {
+      let out;
+      try {
+        // Content-Type을 지정하지 않아야 앱스스크립트에서 CORS 문제가 생기지 않습니다.
+        const res = await fetch(window.CONFIG.API_URL, { method: 'POST', body: JSON.stringify(Object.assign({ action, token: state.token }, payload)) });
+        out = await res.json();
+      } catch (e) {
+        out = { ok: false, code: 'NETWORK', message: '연결에 실패했습니다. 잠시 후 다시 시도하세요.' };
+      }
+      if (out.ok) return out.data;
+      if ((out.code === 'NETWORK' || out.code === 'BUSY') && attempt < 3) { attempt += 1; await sleep(attempt * 1500 + Math.random() * 1000); continue; }
+      if (out.code === 'AUTH' && state.me) { await reauth(); continue; }
+      const err = new Error(out.message); err.code = out.code; throw err;
+    }
+  }
+
+  /** 버튼을 잠그고 작업을 실행 */
+  async function busy(btn, fn) {
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = '처리 중…';
+    try { await fn(); } catch (e) { toast(e.message); } finally { btn.disabled = false; btn.textContent = label; }
+  }
+
+  /* ───── 로그인 ───── */
+  let reauthPromise = null, reauthDone = null;
+  function reauth() {
+    if (!reauthPromise) {
+      store.set(null);
+      reauthPromise = new Promise((resolve) => { reauthDone = resolve; });
+      document.getElementById('reauth').hidden = false;
+      drawGoogleButton(document.getElementById('reauthBtn'));
+    }
+    return reauthPromise;
+  }
+  function onCredential(resp) {
+    const token = resp.credential;
+    if (reauthDone) {
+      // 다른 계정으로 다시 로그인하면 섞이지 않도록 새로 시작
+      if (emailOf(token) !== state.me.email) { store.set(token); state.dirty = {}; state.settingsDirty = false; state.studentsDirty = {}; state.reviewDrafts = {}; location.reload(); return; }
+      state.token = token; store.set(token);
+      document.getElementById('reauth').hidden = true;
+      const done = reauthDone; reauthDone = null; reauthPromise = null; done();
+      return;
+    }
+    state.token = token; store.set(token);
+    start();
+  }
+  function drawGoogleButton(target) {
+    if (!window.google || !google.accounts) { setTimeout(() => drawGoogleButton(target), 200); return; }
+    google.accounts.id.initialize({ client_id: window.CONFIG.CLIENT_ID, callback: onCredential });
+    google.accounts.id.renderButton(target, { theme: 'outline', size: 'large', text: 'signin_with', locale: 'ko' });
+  }
+  function logout() {
+    if (hasUnsaved() && !window.confirm('저장하지 않은 내용이 있습니다. 로그아웃할까요?')) return;
+    state.dirty = {}; state.settingsDirty = false; state.studentsDirty = {}; state.reviewDrafts = {};
+    store.set(null);
+    if (window.google && google.accounts) google.accounts.id.disableAutoSelect();
+    location.reload();
+  }
+  async function showLogin(message) {
+    if (!state.publicTexts) {
+      try { state.publicTexts = await api('public'); } catch (e) { state.publicTexts = { siteTitle: '활동 자기평가', loginGuide: '' }; message = message || e.message; }
+    }
+    document.title = state.publicTexts.siteTitle;
+    const btn = h('div');
+    const inApp = /KAKAOTALK|Instagram|NAVER\(|FBAN|FBAV|; wv\)/i.test(navigator.userAgent);
+    render(h('div', { class: 'card' },
+      h('h1', {}, state.publicTexts.siteTitle),
+      h('p', { class: 'guide' }, state.publicTexts.loginGuide),
+      inApp && h('p', { class: 'over' }, '지금 앱 안의 브라우저로 접속했습니다. Chrome 또는 Safari에서 열어 주세요.'),
+      message && h('p', { class: 'over' }, message), btn));
+    drawGoogleButton(btn);
+  }
+
+  async function start() {
+    render(h('p', { class: 'sub' }, '불러오는 중…'));
+    try {
+      state.me = await api('boot');
+    } catch (e) {
+      store.set(null); state.token = null; state.me = null; showLogin(e.message); return;
+    }
+    document.title = state.me.texts.siteTitle;
+    if (state.me.role === 'admin') return startAdmin();
+    if (state.me.role === 'student') return renderStudent();
+    renderGate();
+  }
+
+  function head(extra) {
+    return h('header', {}, h('h1', {}, state.me.texts.siteTitle),
+      h('div', { class: 'row' }, h('span', { class: 'sub' }, extra || state.me.email), h('button', { onclick: logout }, '로그아웃')));
+  }
+
+  /* ───── 등록 / 승인 대기 ───── */
+  function renderGate() {
+    const t = state.me.texts;
+    if (state.me.role === 'blocked') return render(head(), h('div', { class: 'card' }, '이용할 수 없는 계정입니다. 선생님께 문의하세요.'));
+    if (state.me.role === 'pending') {
+      return render(head(), h('div', { class: 'card' }, h('p', { class: 'guide' }, t.pendingGuide),
+        h('button', { class: 'primary', onclick: start }, '승인 상태 다시 확인')));
+    }
+    if (t.registrationOpen !== '1') return render(head(), h('div', { class: 'card' }, '지금은 등록 신청을 받지 않습니다. 선생님께 문의하세요.'));
+    const sid = h('input', { type: 'text', id: 'sid', inputmode: 'numeric', maxlength: 20 });
+    const name = h('input', { type: 'text', id: 'name', maxlength: 30 });
+    const btn = h('button', { class: 'primary', onclick: () => busy(btn, async () => { await api('register', { sid: sid.value, name: name.value }); await start(); }) }, '등록 신청');
+    render(head(), h('div', { class: 'card' }, h('p', { class: 'guide' }, t.registerGuide),
+      h('label', { for: 'sid' }, '학번'), sid, h('label', { for: 'name' }, '이름'), name, h('p', {}, btn)));
+  }
+
+  /* ───── 학생 ───── */
+  function renderStudent() {
+    const me = state.me, t = me.texts;
+    const tabs = me.tabs;
+    if (!tabs.length) return render(head(me.sid + ' ' + me.name), h('div', { class: 'card' }, '아직 작성할 항목이 없습니다.'));
+    const tab = tabs.find((x) => x.id === state.tabId) || tabs[0];
+    state.tabId = tab.id;
+    const draft = state.drafts[tab.id] || (state.drafts[tab.id] = Object.assign({}, tab.answers));
+
+    const nav = h('nav', { class: 'tabs' }, tabs.map((x) => h('button', { 'aria-pressed': String(x.id === tab.id), onclick: () => { state.tabId = x.id; renderStudent(); } },
+      x.name + (state.dirty[x.id] ? ' •' : '') + (x.result && !x.result.confirm ? ' (확인 필요)' : ''))));
+
+    const statusBadge = h('span', { class: 'badge' + (tab.status === '제출' ? ' ok' : '') }, tab.status === '제출' ? '제출 완료' : tab.status === '임시' ? '임시저장' : '미작성');
+
+    const fields = tab.questions.map((q, i) => {
+      const count = h('div', { class: 'sub' }, (draft[q.id] || '').length + ' / 3000자');
+      return [h('label', { for: 'q' + i }, q.text),
+        h('textarea', { id: 'q' + i, rows: 5, maxlength: 3000, readonly: !tab.open, value: draft[q.id] || '',
+          oninput: (e) => { draft[q.id] = e.target.value; state.dirty[tab.id] = true; count.textContent = e.target.value.length + ' / 3000자'; } }),
+        count];
+    });
+
+    const save = (submit) => (e) => busy(e.target, async () => {
+      const sent = Object.assign({}, draft);
+      const res = await api('saveResponse', { tabId: tab.id, answers: sent, submit });
+      tab.answers = sent; tab.status = res.status; tab.updatedAt = res.updatedAt;
+      // 저장하는 동안 더 입력한 내용이 있으면 미저장 상태 유지
+      if (Object.keys(draft).every((k) => draft[k] === sent[k])) delete state.dirty[tab.id];
+      toast(submit ? t.submitDone : '저장했습니다.');
+      renderStudent();
+    });
+
+    const writeCard = h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('h2', {}, tab.name), statusBadge, tab.updatedAt && h('span', { class: 'sub' }, '마지막 저장 ' + tab.updatedAt)),
+      t.writeGuide && h('p', { class: 'guide' }, t.writeGuide),
+      tab.guide && h('p', { class: 'guide' }, tab.guide),
+      !tab.open && h('p', { class: 'over' }, t.closedNotice),
+      fields,
+      tab.open && h('div', { class: 'row', style: 'margin-top:12px' },
+        tab.status === '제출'
+          ? h('button', { class: 'primary', onclick: save(false) }, '수정 내용 저장')
+          : [h('button', { onclick: save(false) }, '임시저장'), h('button', { class: 'primary', onclick: save(true) }, '제출')]));
+
+    render(head(me.sid + ' ' + me.name), nav, tab.result && resultCard(tab), writeCard);
+  }
+
+  function resultCard(tab) {
+    const r = tab.result;
+    const comment = h('textarea', { 'aria-label': '수정 의견', rows: 3, maxlength: 1000, placeholder: '어느 부분이 어떻게 다른지 적어 주세요.', value: r.draft != null ? r.draft : r.comment, oninput: (e) => { r.draft = e.target.value; } });
+    const send = (confirm) => (e) => busy(e.target, async () => {
+      try {
+        const res = await api('confirmResult', { tabId: tab.id, version: r.version, confirm, comment: comment.value });
+        r.confirm = res.confirm; r.comment = res.comment; delete r.draft;
+        toast('전달했습니다.'); renderStudent();
+      } catch (err) {
+        if (err.code === 'STALE' || err.code === 'FORBIDDEN') { const fresh = await api('boot'); if (fresh.role === 'student') state.me = fresh; else state.me.tabs = []; toast(err.message.replace('새로고침한 뒤 ', '')); renderStudent(); return; }
+        throw err;
+      }
+    });
+    return h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('h2', {}, '내용 확인'), r.confirm && h('span', { class: 'badge ' + (r.confirm === '이상 없음' ? 'ok' : 'warn') }, r.confirm + ' 전달됨')),
+      h('p', { class: 'guide' }, state.me.texts.resultGuide),
+      h('p', { class: 'pre' }, r.text),
+      h('label', {}, '수정 의견 (수정이 필요할 때만)'), comment,
+      h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: send('이상 없음') }, '이상 없음'), h('button', { onclick: send('수정 의견') }, '수정 의견 보내기')));
+  }
+
+  /* ───── 교사 ───── */
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, '0')).join('');
+  async function startAdmin() {
+    try { applyAdmin(await api('adminData')); } catch (e) { render(head(), h('div', { class: 'card over' }, e.message)); return; }
+    renderAdmin();
+  }
+  function applyAdmin(data, keep) {
+    state.admin = data; state.me.texts = data.texts;
+    if (keep !== 'settings') { state.settings = clone({ texts: data.texts, tabs: data.tabs }); state.settingsDirty = false; }
+    if (keep !== 'students') { state.students = clone(data.students); state.studentsDirty = {}; }
+  }
+  function adminNav() {
+    const pending = state.admin.students.filter((s) => s.status === '대기').length;
+    return h('nav', { class: 'tabs' }, [['review', '작성·검토'], ['settings', '설정 (안내·탭)'], ['students', '학생 관리' + (pending ? ' (대기 ' + pending + ')' : '')]]
+      .map(([id, label]) => h('button', { 'aria-pressed': String(state.page === id), onclick: () => { state.page = id; renderAdmin(); window.scrollTo(0, 0); } }, label)));
+  }
+  function renderAdmin() {
+    const body = state.page === 'settings' ? settingsPage() : state.page === 'students' ? studentsPage() : reviewPage();
+    render(head('교사 · ' + state.me.email), adminNav(), body);
+  }
+
+  /* 설정: 모든 안내 문구와 탭을 한 페이지에서 수정 */
+  const TEXT_FIELDS = [['siteTitle', '사이트 제목', 1], ['loginGuide', '로그인 화면 안내', 3], ['registerGuide', '등록 신청 안내', 2], ['pendingGuide', '승인 대기 안내', 2],
+    ['writeGuide', '작성 화면 공통 안내', 4], ['submitDone', '제출 완료 메시지', 1], ['closedNotice', '작성 마감 안내', 1], ['resultGuide', '내용 확인 화면 안내', 3]];
+
+  function settingsPage() {
+    const s = state.settings;
+    const touch = () => { state.settingsDirty = true; };
+    const redraw = () => { touch(); renderAdmin(); };
+
+    const textCard = h('div', { class: 'card' }, h('h2', {}, '안내 문구'),
+      TEXT_FIELDS.map(([k, label, rows]) => [h('label', { for: 't_' + k }, label),
+        rows === 1 ? h('input', { type: 'text', id: 't_' + k, value: s.texts[k], oninput: (e) => { s.texts[k] = e.target.value; touch(); } })
+          : h('textarea', { id: 't_' + k, rows, style: 'min-height:0', value: s.texts[k], oninput: (e) => { s.texts[k] = e.target.value; touch(); } })]),
+      h('p', {}, h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: s.texts.registrationOpen === '1', onchange: (e) => { s.texts.registrationOpen = e.target.checked ? '1' : ''; touch(); } }), '새 학생의 등록 신청 받기')));
+
+    const live = s.tabs.filter((t) => !t.deleted);
+    const move = (tab, dir) => {
+      const other = live[live.indexOf(tab) + dir];
+      const a = s.tabs.indexOf(tab), b = s.tabs.indexOf(other);
+      [s.tabs[a], s.tabs[b]] = [s.tabs[b], s.tabs[a]]; redraw();
+    };
+    const field = (tab, key, label, attrs) => [h('label', {}, label), h('input', Object.assign({ type: 'text', 'aria-label': label, value: String(tab[key] == null ? '' : tab[key]), oninput: (e) => { tab[key] = e.target.value; touch(); } }, attrs))];
+
+    const tabCards = live.map((tab, i) => h('div', { class: 'card tabcard' },
+      h('div', { class: 'row' }, h('h2', { style: 'margin-right:auto' }, tab.name || '새 탭'),
+        h('button', { disabled: i === 0, onclick: () => move(tab, -1), 'aria-label': '위로' }, '↑'),
+        h('button', { disabled: i === live.length - 1, onclick: () => move(tab, 1), 'aria-label': '아래로' }, '↓'),
+        h('button', { class: 'danger', onclick: () => { if (window.confirm('"' + (tab.name || '새 탭') + '" 탭을 삭제할까요? 저장하면 화면에서 사라지며, 학생 응답은 시트에 남습니다.')) { tab.deleted = true; redraw(); } } }, '삭제')),
+      field(tab, 'name', '탭 이름 (과목명, 동아리명 등)', { maxlength: 50 }),
+      h('label', {}, '이 탭의 안내'), h('textarea', { 'aria-label': '이 탭의 안내', rows: 3, value: tab.guide, oninput: (e) => { tab.guide = e.target.value; touch(); } }),
+      h('label', {}, '학생에게 받을 문항'),
+      tab.questions.map((q, qi) => h('div', { class: 'row', style: 'flex-wrap:nowrap;margin-bottom:6px' },
+        h('input', { type: 'text', 'aria-label': '문항 ' + (qi + 1), maxlength: 500, value: q.text, oninput: (e) => { q.text = e.target.value; touch(); } }),
+        h('button', { class: 'danger', 'aria-label': '문항 삭제', onclick: () => { tab.questions.splice(qi, 1); redraw(); } }, '×'))),
+      h('button', { disabled: tab.questions.length >= 12, onclick: () => { tab.questions.push({ id: newId(), text: '' }); redraw(); } }, '+ 문항 추가'),
+      field(tab, 'groups', '대상 그룹 (비우면 승인된 모든 학생, 여러 개는 쉼표로 구분)', { placeholder: '예: 2-3, 천문동아리' }),
+      field(tab, 'byteLimit', '작성 바이트 기준 (0이면 표시만)', { inputmode: 'numeric' }),
+      h('p', {}, h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: tab.open, onchange: (e) => { tab.open = e.target.checked; touch(); } }), '학생 작성 받는 중 (끄면 마감)'))));
+
+    const saveBtn = h('button', { class: 'primary', onclick: () => busy(saveBtn, async () => {
+      applyAdmin(await api('saveSettings', { texts: s.texts, tabs: s.tabs }), 'students');
+      state.review = {};
+      toast('설정을 저장했습니다.'); renderAdmin();
+    }) }, '설정 저장');
+
+    return [textCard, h('h2', {}, '탭 관리'), tabCards,
+      h('p', {}, h('button', { onclick: () => { s.tabs.push({ id: newId(), name: '', guide: '', questions: [{ id: newId(), text: '어떤 활동을 했나요? 자신의 활동을 평가해 적어 주세요.' }], groups: '', open: true, byteLimit: 1500 }); redraw(); } }, '+ 탭 추가')),
+      h('div', { class: 'bar row' }, saveBtn, h('span', { class: 'sub' }, '저장해야 학생 화면에 반영됩니다.'))];
+  }
+
+  /* 학생 관리 */
+  function studentsPage() {
+    const list = state.students.slice().sort((a, b) => (a.status === '대기' ? 0 : 1) - (b.status === '대기' ? 0 : 1) || a.sid.localeCompare(b.sid, 'ko', { numeric: true }));
+    const mark = (s) => { state.studentsDirty[s.email] = true; };
+    const counts = {};
+    list.forEach((s) => { counts[s.sid] = (counts[s.sid] || 0) + 1; });
+    const input = (s, key, label) => h('input', { type: 'text', 'aria-label': label, value: s[key], oninput: (e) => { s[key] = e.target.value; mark(s); } });
+
+    const saveBtn = h('button', { class: 'primary', onclick: () => busy(saveBtn, async () => {
+      const changed = state.students.filter((s) => state.studentsDirty[s.email]);
+      if (!changed.length) { toast('바뀐 내용이 없습니다.'); return; }
+      applyAdmin(await api('saveStudents', { students: changed }), 'settings');
+      state.review = {}; toast(changed.length + '명을 저장했습니다.'); renderAdmin();
+    }) }, '변경 저장');
+
+    const refresh = h('button', { onclick: () => busy(refresh, async () => {
+      if (Object.keys(state.studentsDirty).length) { toast('먼저 변경 내용을 저장하세요.'); return; }
+      applyAdmin(await api('adminData'), 'settings'); renderAdmin();
+    }) }, '신청 목록 새로고침');
+
+    return [h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('h2', { style: 'margin-right:auto' }, '학생 ' + list.length + '명'), refresh,
+        h('button', { onclick: () => {
+          const waiting = state.students.filter((s) => s.status === '대기');
+          if (!waiting.length || !window.confirm('대기 ' + waiting.length + '명을 모두 승인으로 바꿀까요? 학번과 이름을 확인하세요.')) return;
+          waiting.forEach((s) => { s.status = '승인'; mark(s); }); renderAdmin();
+        } }, '대기 전체 승인')),
+      h('p', { class: 'sub' }, '학번·이름과 구글 계정이 본인 것인지 확인한 뒤 승인하세요. 그룹은 탭의 대상 그룹과 맞춰 쉼표로 입력합니다.'),
+      h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['학번', '이름', '구글 계정', '그룹', '상태'].map((x) => h('th', {}, x)))),
+        h('tbody', {}, list.map((s) => h('tr', {},
+          h('td', {}, input(s, 'sid', '학번'), counts[s.sid] > 1 && h('div', { class: 'over sub' }, '학번 중복')),
+          h('td', {}, input(s, 'name', '이름')), h('td', { class: 'sub' }, s.email), h('td', {}, input(s, 'groups', '그룹')),
+          h('td', {}, h('select', { 'aria-label': '상태', value: s.status, onchange: (e) => { s.status = e.target.value; mark(s); } }, ['대기', '승인', '차단'].map((x) => h('option', { value: x }, x))))))))),
+      !list.length && h('p', { class: 'sub' }, '아직 신청한 학생이 없습니다.')),
+      h('div', { class: 'bar row' }, saveBtn)];
+  }
+
+  /* 작성·검토 */
+  async function loadReview(tabId, btn) {
+    const run = async () => { state.review[tabId] = await api('reviewData', { tabId }); if (state.page === 'review') renderAdmin(); };
+    if (btn) return busy(btn, run);
+    try { await run(); } catch (e) { state.review[tabId] = { error: e.message }; if (state.page === 'review') renderAdmin(); }
+  }
+  const loading = {};
+  function reviewPage() {
+    const tabs = state.admin.tabs;
+    if (!tabs.length) return h('div', { class: 'card' }, '설정 화면에서 탭을 먼저 만드세요.');
+    const tab = tabs.find((t) => t.id === state.reviewTab) || tabs[0];
+    state.reviewTab = tab.id;
+    const drafts = state.reviewDrafts[tab.id] || (state.reviewDrafts[tab.id] = {});
+    const nav = h('nav', { class: 'tabs' }, tabs.map((t) => h('button', { 'aria-pressed': String(t.id === tab.id), onclick: () => { state.reviewTab = t.id; renderAdmin(); } },
+      t.name + (Object.keys(state.reviewDrafts[t.id] || {}).length ? ' •' : ''))));
+    const data = state.review[tab.id];
+    if (!data) {
+      if (!loading[tab.id]) { loading[tab.id] = true; loadReview(tab.id).finally(() => { loading[tab.id] = false; }); }
+      return [nav, h('p', { class: 'sub' }, '불러오는 중…')];
+    }
+    if (data.error) return [nav, h('div', { class: 'card' }, h('p', { class: 'over' }, data.error), h('button', { onclick: () => { delete state.review[tab.id]; renderAdmin(); } }, '다시 시도'))];
+
+    const current = (s) => drafts[s.email] || { text: s.text, published: s.published };
+    const edit = (s, patch) => {
+      const next = Object.assign({}, current(s), patch);
+      if (next.text === s.text && next.published === s.published) delete drafts[s.email]; else drafts[s.email] = next;
+    };
+    const filters = { all: ['전체', () => true], submitted: ['제출', (s) => s.status === '제출'], missing: ['미제출', (s) => s.status !== '제출'], fix: ['수정 의견', (s) => s.confirm === '수정 의견'] };
+    const shown = data.students.filter(filters[state.filter][1]);
+    const submitted = data.students.filter(filters.submitted[1]).length;
+
+    const bulk = (published) => () => {
+      if (published && !window.confirm('내용이 있는 학생 전원을 공개로 표시할까요? 저장해야 반영됩니다.')) return;
+      data.students.forEach((s) => { const c = current(s); if (c.text.trim()) edit(s, { published }); }); renderAdmin();
+    };
+
+    const cards = shown.map((s) => {
+      const c = current(s);
+      const counter = h('span', { class: 'sub' });
+      const count = (text) => { const n = neisBytes(text); counter.textContent = n + (tab.byteLimit ? ' / ' + tab.byteLimit : '') + ' 바이트 · ' + text.length + '자'; counter.className = tab.byteLimit && n > tab.byteLimit ? 'over' : 'sub'; };
+      count(c.text);
+      return h('div', { class: 'card student' },
+        h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, s.sid + ' ' + s.name),
+          h('span', { class: 'badge' + (s.status === '제출' ? ' ok' : '') }, s.status),
+          s.confirm && h('span', { class: 'badge ' + (s.confirm === '이상 없음' ? 'ok' : 'warn') }, s.confirm)),
+        s.comment && h('p', { class: 'pre over' }, '학생 의견: ' + s.comment),
+        s.answers.length ? s.answers.map((a) => [h('h3', {}, a.q), h('div', { class: 'guide' }, a.a || '(빈칸)')]) : h('p', { class: 'sub' }, '작성한 자기평가가 없습니다.'),
+        h('label', {}, '교사 작성 내용'),
+        h('textarea', { 'aria-label': s.name + ' 교사 작성 내용', rows: 6, value: c.text, oninput: (e) => { edit(s, { text: e.target.value }); count(e.target.value); } }),
+        h('div', { class: 'row' }, counter, h('label', { class: 'check', style: 'margin-left:auto' },
+          h('input', { type: 'checkbox', checked: c.published, onchange: (e) => edit(s, { published: e.target.checked }) }), '이 학생에게 공개')));
+    });
+
+    const saveBtn = h('button', { class: 'primary', onclick: () => busy(saveBtn, async () => {
+      const items = Object.entries(drafts).map(([email, d]) => ({ email, text: d.text, published: d.published }));
+      if (!items.length) { toast('바뀐 내용이 없습니다.'); return; }
+      const fresh = await api('saveReviews', { tabId: tab.id, items });
+      state.review[tab.id] = fresh;
+      // 저장 중에 더 고친 내용은 남겨 둠
+      items.forEach((it) => { const d = drafts[it.email]; if (d && d.text === it.text && d.published === it.published) delete drafts[it.email]; });
+      toast(items.length + '명을 저장했습니다.'); renderAdmin();
+    }) }, '변경 저장');
+    const refresh = h('button', { onclick: () => loadReview(tab.id, refresh) }, '새로고침');
+
+    return [nav, h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('strong', {}, '제출 ' + submitted + ' / ' + data.students.length + '명'),
+        h('select', { 'aria-label': '보기', value: state.filter, onchange: (e) => { state.filter = e.target.value; renderAdmin(); } }, Object.entries(filters).map(([k, v]) => h('option', { value: k }, v[0]))),
+        refresh, h('button', { onclick: bulk(true) }, '전체 공개'), h('button', { onclick: bulk(false) }, '전체 비공개')),
+      h('p', { class: 'sub' }, '작성 내용은 "공개"를 켜고 저장한 학생에게만 보입니다. 문구를 고치면 그 학생의 확인 결과는 초기화됩니다.')),
+      cards.length ? cards : h('p', { class: 'sub' }, '해당하는 학생이 없습니다.'),
+      h('div', { class: 'bar row' }, saveBtn)];
+  }
+
+  function hasUnsaved() {
+    return Object.keys(state.dirty).length > 0 || state.settingsDirty || Object.keys(state.studentsDirty).length > 0
+      || Object.values(state.reviewDrafts).some((d) => Object.keys(d).length);
+  }
+  window.addEventListener('beforeunload', (e) => { if (hasUnsaved()) { e.preventDefault(); e.returnValue = ''; } });
+
+  state.token = store.get();
+  if (state.token) start(); else showLogin();
+})();
+</script>
+</body>
+</html>
